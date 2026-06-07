@@ -1,8 +1,6 @@
 import * as React from "react";
 import Chat from "./Chat";
-import TextInsertion from "./TextInsertion";
-import { makeStyles, tokens, Text, Divider } from "@fluentui/react-components";
-import { insertText } from "../taskpane";
+import { makeStyles, tokens, Text } from "@fluentui/react-components";
 
 interface AppProps {
   title: string;
@@ -21,9 +19,6 @@ const useStyles = makeStyles({
   headerText: {
     color: tokens.colorNeutralForegroundOnBrand,
   },
-  sanityCheck: {
-    flexShrink: 0,
-  },
 });
 
 const App: React.FC<AppProps> = (props: AppProps) => {
@@ -37,10 +32,6 @@ const App: React.FC<AppProps> = (props: AppProps) => {
         </Text>
       </header>
       <Chat />
-      <Divider>Office.js sanity check (milestone 1)</Divider>
-      <div className={styles.sanityCheck}>
-        <TextInsertion insertText={insertText} />
-      </div>
     </div>
   );
 };
