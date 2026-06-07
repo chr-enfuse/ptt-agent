@@ -2,6 +2,7 @@ import { Router } from "express";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
 import ExcelJS from "exceljs";
+import { describeStructure } from "../excel.js";
 
 export const workbooksRouter = Router();
 
@@ -59,19 +60,5 @@ workbooksRouter.get("/:fileId/structure", (req, res) => {
     res.status(404).json({ error: "unknown fileId" });
     return;
   }
-  res.json({
-    sheets: workbook.worksheets.map((ws) => {
-      const headerRow = ws.getRow(1);
-      const headers: (string | null)[] = [];
-      headerRow.eachCell({ includeEmpty: false }, (cell) => {
-        headers.push(cell.text || null);
-      });
-      return {
-        name: ws.name,
-        rowCount: ws.rowCount,
-        columnCount: ws.columnCount,
-        headers,
-      };
-    }),
-  });
+  res.json(describeStructure(workbook));
 });
