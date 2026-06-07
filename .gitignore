@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build output
+dist/
+build/
+lib/
+out/
+*.tsbuildinfo
+
+# Environment / secrets — never commit the Anthropic API key
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Office add-in dev certs
+certs/
+*.crt
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Uploaded / generated artifacts (financial data must not be committed)
+uploads/
+tmp/
+*.xlsx
+*.pptx
+!templates/**/*.pptx
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
