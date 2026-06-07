@@ -34,6 +34,10 @@ tmp/
 *.pptx
 !templates/**/*.pptx
 
+# Local planning notes
+PLAN.md
+WEBVIEW2.md
+
 # Editor / OS
 .vscode/*
 !.vscode/extensions.json
