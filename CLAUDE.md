@@ -8,14 +8,14 @@ model** — they're extracted from workbook cells by deterministic tools and ver
 ## Layout
 
 - `addin/` — Office Add-in task pane (React + TS + Office.js + Fluent UI, webpack, XML manifest)
-- `backend/` — Express + TS API (Anthropic SDK streaming chat, exceljs workbook parsing)
+- `backend/` — Express + TS API (OpenRouter streaming chat via the OpenAI SDK, exceljs workbook parsing)
 
 ## Running the app
 
 Two independent servers; both must run for the full experience:
 
 ```powershell
-# Backend — http://localhost:3001 (needs ANTHROPIC_API_KEY in backend/.env; copy .env.example)
+# Backend — http://localhost:3001 (needs OPENROUTER_API_KEY in backend/.env; copy .env.example)
 cd backend ; npm run dev
 
 # Add-in — compiles + serves task pane at https://localhost:3000, sideloads into desktop
@@ -42,7 +42,7 @@ cd addin ; npm start
 
 1. Backend: `cd backend ; npm run typecheck`, then `curl http://localhost:3001/healthz`.
 2. Add-in: `cd addin ; npm run build:dev` must compile; then sideload and send a chat message
-   (streams from Opus 4.8). The Office.js deck plumbing lives in `addin/src/taskpane/deck.ts`
+   (streams from the configured OpenRouter model). The Office.js deck plumbing lives in `addin/src/taskpane/deck.ts`
    (deck state, template-slide insertion, placeholder fills).
 3. Template fill end-to-end: upload a workbook in the pane, ask the agent to build a deck from
    the quarterly-review template, and confirm placed values match their workbook cells.
@@ -58,5 +58,6 @@ cd addin ; npm start
   in the task pane: the backend loop emits a `client_tool` SSE event and waits for the pane to
   POST the Office.js result back to `/api/chat/client-result` (see `addin/src/taskpane/deck.ts`).
 - No AI attribution trailers in commit messages.
-- Anthropic calls: `claude-opus-4-8`, adaptive thinking, system prompt kept byte-stable for
-  prompt caching (see `backend/src/routes/chat.ts`).
+- LLM calls go through OpenRouter's OpenAI-compatible API (OpenAI SDK pointed at
+  `https://openrouter.ai/api/v1`). Model and reasoning effort are env-configurable (`MODEL`,
+  `REASONING_EFFORT`); default model is `openai/gpt-oss-20b` (see `backend/src/routes/chat.ts`).

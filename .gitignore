@@ -10,7 +10,7 @@ lib/
 out/
 *.tsbuildinfo
 
-# Environment / secrets — never commit the Anthropic API key
+# Environment / secrets — never commit the OpenRouter API key
 .env
 .env.*
 !.env.example

@@ -6,7 +6,7 @@ import { executeDeckTool } from "../deck";
 
 /* global fetch, TextDecoder, FormData, File, HTMLDivElement, HTMLInputElement */
 
-// The backend holds the Anthropic API key and runs the agent tool-use loop.
+// The backend holds the OpenRouter API key and runs the agent tool-use loop.
 const BACKEND_URL = "http://localhost:3001";
 
 export interface ChatMessage {
