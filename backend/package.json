@@ -2,7 +2,7 @@
   "name": "deck-agent-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "Backend service for the PowerPoint Financial-Deck Agent add-in: holds the Anthropic API key, runs the Messages API tool-use loop, parses Excel deterministically, and performs numeric verification.",
+  "description": "Backend service for the PowerPoint Financial-Deck Agent add-in: holds the OpenRouter API key, runs the chat-completions tool-use loop, parses Excel deterministically, and performs numeric verification.",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -13,12 +13,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.102.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "multer": "^2.1.1",
+    "openai": "^6.42.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

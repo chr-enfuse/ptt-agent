@@ -24,7 +24,7 @@ app.use("/api/workbooks", workbooksRouter);
 
 app.listen(PORT, () => {
   console.log(`deck-agent-backend listening on http://localhost:${PORT}`);
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.warn("WARNING: ANTHROPIC_API_KEY is not set — /api/chat will fail. Copy .env.example to .env and set it.");
+  if (!process.env.OPENROUTER_API_KEY) {
+    console.warn("WARNING: OPENROUTER_API_KEY is not set — /api/chat will fail. Copy .env.example to .env and set it.");
   }
 });

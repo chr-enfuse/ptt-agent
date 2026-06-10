@@ -1,20 +1,46 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { ExcelToolError, listWorkbookStructure, readExcelRange, MAX_CELLS_PER_READ } from "../excel.js";
 import { TemplateToolError, listTemplates, loadTemplate, getTemplateBase64 } from "../templates.js";
 
 export const chatRouter = Router();
 
-const client = new Anthropic(); // reads ANTHROPIC_API_KEY from the environment
+// The chat is served through OpenRouter's OpenAI-compatible API. The key and
+// model both come from the environment so the model is swappable without code
+// changes (see .env.example). Constructed lazily: the SDK throws when the key is
+// absent, and we want a missing key to fail the request — not crash boot.
+let client: OpenAI | null = null;
+function getClient(): OpenAI {
+  if (!client) {
+    client = new OpenAI({
+      apiKey: process.env.OPENROUTER_API_KEY,
+      baseURL: process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
+      // Optional OpenRouter attribution headers (used for their app dashboard).
+      defaultHeaders: { "X-Title": "PowerPoint Financial-Deck Agent" },
+    });
+  }
+  return client;
+}
 
-const MODEL = "claude-opus-4-8";
+const MODEL = process.env.MODEL ?? "openai/gpt-oss-20b";
+
+// OpenRouter's unified reasoning control. gpt-oss exposes low|medium|high effort;
+// for models without reasoning OpenRouter simply ignores it.
+const REASONING_EFFORT = (process.env.REASONING_EFFORT ?? "high") as "low" | "medium" | "high";
+
+// Upper bound on completion tokens per round (reasoning + visible output).
+const MAX_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS ?? 32000);
 
 /** Safety valve on the tool-use loop — one user turn never runs more rounds than this. */
 const MAX_LOOP_ITERATIONS = 16;
 
-// Keep this byte-stable: it sits at the front of the prompt prefix so it can be
-// served from the prompt cache. Volatile, per-request context goes in messages.
+// Chat-completions request shape plus OpenRouter's `reasoning` passthrough,
+// which the stock OpenAI types don't model.
+type ChatParams = OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming & {
+  reasoning?: { effort: "low" | "medium" | "high" };
+};
+
 const SYSTEM_PROMPT = `You are a financial-deck assistant embedded in a PowerPoint task pane.
 You help analysts build client-facing financial presentations from branded templates and
 uploaded Excel workbooks.
@@ -48,147 +74,166 @@ Hard rules:
 (Deterministic verification of placements arrives in the next milestone; placements are not
 yet blocked on mismatch.)`;
 
-// Tool definitions render ahead of the system prompt in the prompt prefix — keep them
-// byte-stable too (the cache breakpoint on the system block covers tools + system).
-const TOOLS: Anthropic.Tool[] = [
+const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
-    name: "list_workbook_structure",
-    description:
-      "List the sheets of an uploaded Excel workbook: name, row/column counts, and first-row headers. " +
-      "Call this first to orient yourself in a workbook before reading cell ranges.",
-    input_schema: {
-      type: "object",
-      properties: {
-        file_id: {
-          type: "string",
-          description: "The file_id of an uploaded workbook, as announced in the conversation.",
-        },
-      },
-      required: ["file_id"],
-    },
-  },
-  {
-    name: "read_excel_range",
-    description:
-      "Read exact cell values from an uploaded Excel workbook. Returns structured cells " +
-      "{addr, raw, formula?, numberFormat, text} where raw is the stored value (for formula " +
-      "cells, the cached computed result) and text is the display string. Call this whenever " +
-      `the user asks about workbook contents — never answer from memory. Max ${MAX_CELLS_PER_READ} cells per call; ` +
-      "read large sheets in chunks.",
-    input_schema: {
-      type: "object",
-      properties: {
-        file_id: {
-          type: "string",
-          description: "The file_id of an uploaded workbook, as announced in the conversation.",
-        },
-        sheet: {
-          type: "string",
-          description: "Worksheet name, exactly as returned by list_workbook_structure.",
-        },
-        range: {
-          type: "string",
-          description: 'Cell or range in A1 notation, e.g. "B7" or "A1:C10".',
-        },
-      },
-      required: ["file_id", "sheet", "range"],
-    },
-  },
-  {
-    name: "list_templates",
-    description:
-      "List the branded PowerPoint templates available in the template store: id, name, " +
-      "description, and slide count. Call load_template for a template's placeholder inventory.",
-    input_schema: { type: "object", properties: {} },
-  },
-  {
-    name: "load_template",
-    description:
-      "Load a template's full placeholder inventory: each slide's named placeholder shapes with " +
-      "a description and kind (text | number). Use this to plan which workbook cell feeds which " +
-      "placeholder before inserting slides. Placeholders of kind number must be filled from " +
-      "workbook cells with a source reference.",
-    input_schema: {
-      type: "object",
-      properties: {
-        template_id: {
-          type: "string",
-          description: "Template id, as returned by list_templates.",
-        },
-      },
-      required: ["template_id"],
-    },
-  },
-  {
-    name: "get_deck_state",
-    description:
-      "Read the deck currently open in PowerPoint: each slide's id, index, and shapes " +
-      "({name, text}). Executes in the task pane via Office.js.",
-    input_schema: { type: "object", properties: {} },
-  },
-  {
-    name: "insert_template_slides",
-    description:
-      "Append all slides of a branded template to the deck open in PowerPoint. Returns the new " +
-      "slides' ids and indexes — use those ids with apply_slide_content. Executes in the task " +
-      "pane via Office.js.",
-    input_schema: {
-      type: "object",
-      properties: {
-        template_id: {
-          type: "string",
-          description: "Template id, as returned by list_templates.",
-        },
-      },
-      required: ["template_id"],
-    },
-  },
-  {
-    name: "apply_slide_content",
-    description:
-      "Write text into named placeholder shapes on one slide of the open deck. Each fill sets " +
-      "one shape's full text. For every fill containing a financial figure, quote the figure " +
-      "exactly as returned by read_excel_range and include the source cell it was read from. " +
-      "Returns per-fill success. Executes in the task pane via Office.js.",
-    input_schema: {
-      type: "object",
-      properties: {
-        slide_id: {
-          type: "string",
-          description: "Slide id, as returned by insert_template_slides or get_deck_state.",
-        },
-        fills: {
-          type: "array",
-          description: "One entry per placeholder shape to fill on this slide.",
-          items: {
-            type: "object",
-            properties: {
-              shape_name: {
-                type: "string",
-                description: "Placeholder shape name, from load_template or get_deck_state.",
-              },
-              text: {
-                type: "string",
-                description: "Exact text to place in the shape.",
-              },
-              source: {
-                type: "object",
-                description:
-                  "Provenance of the figure in `text` — the workbook cell it was read from. " +
-                  "Required whenever the text contains a workbook figure.",
-                properties: {
-                  file_id: { type: "string", description: "Uploaded workbook file_id." },
-                  sheet: { type: "string", description: "Worksheet name." },
-                  cell: { type: "string", description: 'Cell address in A1 notation, e.g. "C7".' },
-                },
-                required: ["file_id", "sheet", "cell"],
-              },
-            },
-            required: ["shape_name", "text"],
+    type: "function",
+    function: {
+      name: "list_workbook_structure",
+      description:
+        "List the sheets of an uploaded Excel workbook: name, row/column counts, and first-row headers. " +
+        "Call this first to orient yourself in a workbook before reading cell ranges.",
+      parameters: {
+        type: "object",
+        properties: {
+          file_id: {
+            type: "string",
+            description: "The file_id of an uploaded workbook, as announced in the conversation.",
           },
         },
+        required: ["file_id"],
       },
-      required: ["slide_id", "fills"],
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_excel_range",
+      description:
+        "Read exact cell values from an uploaded Excel workbook. Returns structured cells " +
+        "{addr, raw, formula?, numberFormat, text} where raw is the stored value (for formula " +
+        "cells, the cached computed result) and text is the display string. Call this whenever " +
+        `the user asks about workbook contents — never answer from memory. Max ${MAX_CELLS_PER_READ} cells per call; ` +
+        "read large sheets in chunks.",
+      parameters: {
+        type: "object",
+        properties: {
+          file_id: {
+            type: "string",
+            description: "The file_id of an uploaded workbook, as announced in the conversation.",
+          },
+          sheet: {
+            type: "string",
+            description: "Worksheet name, exactly as returned by list_workbook_structure.",
+          },
+          range: {
+            type: "string",
+            description: 'Cell or range in A1 notation, e.g. "B7" or "A1:C10".',
+          },
+        },
+        required: ["file_id", "sheet", "range"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_templates",
+      description:
+        "List the branded PowerPoint templates available in the template store: id, name, " +
+        "description, and slide count. Call load_template for a template's placeholder inventory.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "load_template",
+      description:
+        "Load a template's full placeholder inventory: each slide's named placeholder shapes with " +
+        "a description and kind (text | number). Use this to plan which workbook cell feeds which " +
+        "placeholder before inserting slides. Placeholders of kind number must be filled from " +
+        "workbook cells with a source reference.",
+      parameters: {
+        type: "object",
+        properties: {
+          template_id: {
+            type: "string",
+            description: "Template id, as returned by list_templates.",
+          },
+        },
+        required: ["template_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_deck_state",
+      description:
+        "Read the deck currently open in PowerPoint: each slide's id, index, and shapes " +
+        "({name, text}). Executes in the task pane via Office.js.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "insert_template_slides",
+      description:
+        "Append all slides of a branded template to the deck open in PowerPoint. Returns the new " +
+        "slides' ids and indexes — use those ids with apply_slide_content. Executes in the task " +
+        "pane via Office.js.",
+      parameters: {
+        type: "object",
+        properties: {
+          template_id: {
+            type: "string",
+            description: "Template id, as returned by list_templates.",
+          },
+        },
+        required: ["template_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "apply_slide_content",
+      description:
+        "Write text into named placeholder shapes on one slide of the open deck. Each fill sets " +
+        "one shape's full text. For every fill containing a financial figure, quote the figure " +
+        "exactly as returned by read_excel_range and include the source cell it was read from. " +
+        "Returns per-fill success. Executes in the task pane via Office.js.",
+      parameters: {
+        type: "object",
+        properties: {
+          slide_id: {
+            type: "string",
+            description: "Slide id, as returned by insert_template_slides or get_deck_state.",
+          },
+          fills: {
+            type: "array",
+            description: "One entry per placeholder shape to fill on this slide.",
+            items: {
+              type: "object",
+              properties: {
+                shape_name: {
+                  type: "string",
+                  description: "Placeholder shape name, from load_template or get_deck_state.",
+                },
+                text: {
+                  type: "string",
+                  description: "Exact text to place in the shape.",
+                },
+                source: {
+                  type: "object",
+                  description:
+                    "Provenance of the figure in `text` — the workbook cell it was read from. " +
+                    "Required whenever the text contains a workbook figure.",
+                  properties: {
+                    file_id: { type: "string", description: "Uploaded workbook file_id." },
+                    sheet: { type: "string", description: "Worksheet name." },
+                    cell: { type: "string", description: 'Cell address in A1 notation, e.g. "C7".' },
+                  },
+                  required: ["file_id", "sheet", "cell"],
+                },
+              },
+              required: ["shape_name", "text"],
+            },
+          },
+        },
+        required: ["slide_id", "fills"],
+      },
     },
   },
 ];
@@ -284,6 +329,12 @@ function executeClientTool(
   });
 }
 
+/** Parse a streamed tool-call's accumulated argument string into an input object. */
+function parseToolArgs(raw: string): Record<string, unknown> {
+  if (!raw || !raw.trim()) return {};
+  return JSON.parse(raw) as Record<string, unknown>;
+}
+
 /**
  * POST /api/chat/client-result
  * Body: { callId: string, content: string, isError?: boolean }
@@ -304,7 +355,7 @@ chatRouter.post("/client-result", (req, res) => {
 
 /**
  * POST /api/chat
- * Body: { messages: Anthropic.MessageParam[] }
+ * Body: { messages: { role: "user" | "assistant"; content: string }[] }
  * Responds with Server-Sent Events:
  *   event: text   data: {"text": "..."}                 (incremental text deltas)
  *   event: tool   data: {"name": "...", "input": {...}} (a tool call is executing)
@@ -312,8 +363,8 @@ chatRouter.post("/client-result", (req, res) => {
  *   event: error  data: {"message": "..."}
  */
 chatRouter.post("/", async (req, res) => {
-  const messages = req.body?.messages as Anthropic.MessageParam[] | undefined;
-  if (!Array.isArray(messages) || messages.length === 0) {
+  const incoming = req.body?.messages as { role: "user" | "assistant"; content: string }[] | undefined;
+  if (!Array.isArray(incoming) || incoming.length === 0) {
     res.status(400).json({ error: "body must include a non-empty `messages` array" });
     return;
   }
@@ -341,7 +392,11 @@ chatRouter.post("/", async (req, res) => {
   try {
     // Tool-use loop: stream each round to the client; when the model requests tools,
     // execute them backend-side, feed the results back, and continue until end of turn.
-    const loopMessages: Anthropic.MessageParam[] = [...messages];
+    // The system prompt leads; the rest is the conversation as the pane sees it.
+    const loopMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      { role: "system", content: SYSTEM_PROMPT },
+      ...incoming.map((m) => ({ role: m.role, content: m.content })),
+    ];
 
     for (let iteration = 0; ; iteration++) {
       if (clientGone) return;
@@ -350,64 +405,88 @@ chatRouter.post("/", async (req, res) => {
         return;
       }
 
-      const stream = client.messages.stream({
+      const params: ChatParams = {
         model: MODEL,
-        max_tokens: 64000,
-        thinking: { type: "adaptive" },
-        output_config: { effort: "high" },
-        tools: TOOLS,
-        system: [
-          {
-            type: "text",
-            text: SYSTEM_PROMPT,
-            cache_control: { type: "ephemeral" },
-          },
-        ],
+        max_tokens: MAX_TOKENS,
         messages: loopMessages,
-      });
+        tools: TOOLS,
+        tool_choice: "auto",
+        stream: true,
+        reasoning: { effort: REASONING_EFFORT },
+      };
+      const stream = await getClient().chat.completions.create(params);
 
-      stream.on("text", (delta) => send("text", { text: delta }));
+      // Reassemble the assistant turn from streamed deltas: visible text plus any
+      // tool calls (whose id/name/arguments arrive split across chunks by index).
+      let text = "";
+      const toolCallsByIndex: { id: string; name: string; args: string }[] = [];
+      let finishReason: string | null = null;
 
-      const message = await stream.finalMessage();
+      for await (const chunk of stream) {
+        const choice = chunk.choices[0];
+        if (!choice) continue;
+        const delta = choice.delta;
+        if (delta?.content) {
+          text += delta.content;
+          send("text", { text: delta.content });
+        }
+        for (const tc of delta?.tool_calls ?? []) {
+          const slot = (toolCallsByIndex[tc.index] ??= { id: "", name: "", args: "" });
+          if (tc.id) slot.id = tc.id;
+          if (tc.function?.name) slot.name = tc.function.name;
+          if (tc.function?.arguments) slot.args += tc.function.arguments;
+        }
+        if (choice.finish_reason) finishReason = choice.finish_reason;
+      }
 
-      if (message.stop_reason === "tool_use") {
-        loopMessages.push({ role: "assistant", content: message.content });
+      const toolCalls = toolCallsByIndex.filter(Boolean);
 
-        const toolResults: Anthropic.ToolResultBlockParam[] = [];
-        for (const block of message.content) {
-          if (block.type !== "tool_use") continue;
-          const input = block.input as Record<string, unknown>;
+      if (toolCalls.length > 0) {
+        loopMessages.push({
+          role: "assistant",
+          content: text,
+          tool_calls: toolCalls.map((t) => ({
+            id: t.id,
+            type: "function",
+            function: { name: t.name, arguments: t.args },
+          })),
+        });
+
+        for (const t of toolCalls) {
           let outcome: ToolOutcome;
-          if (CLIENT_TOOLS.has(block.name)) {
-            // The client_tool event both renders the activity chip and carries the call.
-            outcome = await executeClientTool(block.name, input, send, requestCallIds);
-          } else {
-            send("tool", { name: block.name, input });
-            outcome = executeBackendTool(block.name, input);
+          let input: Record<string, unknown>;
+          try {
+            input = parseToolArgs(t.args);
+          } catch {
+            // Model emitted malformed JSON arguments — report back so it can retry.
+            loopMessages.push({
+              role: "tool",
+              tool_call_id: t.id,
+              content: `Error: could not parse arguments for ${t.name} as JSON`,
+            });
+            continue;
           }
-          const { content, isError } = outcome;
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: block.id,
-            content,
-            ...(isError ? { is_error: true } : {}),
+          if (CLIENT_TOOLS.has(t.name)) {
+            // The client_tool event both renders the activity chip and carries the call.
+            outcome = await executeClientTool(t.name, input, send, requestCallIds);
+          } else {
+            send("tool", { name: t.name, input });
+            outcome = executeBackendTool(t.name, input);
+          }
+          loopMessages.push({
+            role: "tool",
+            tool_call_id: t.id,
+            content: outcome.content,
           });
         }
-        loopMessages.push({ role: "user", content: toolResults });
         continue;
       }
 
-      if (message.stop_reason === "pause_turn") {
-        // Server-side pause — re-send to let the model resume where it left off.
-        loopMessages.push({ role: "assistant", content: message.content });
-        continue;
-      }
-
-      send("done", { stopReason: message.stop_reason });
+      send("done", { stopReason: finishReason });
       return;
     }
   } catch (err) {
-    const message = err instanceof Anthropic.APIError ? `${err.status}: ${err.message}` : String(err);
+    const message = err instanceof OpenAI.APIError ? `${err.status}: ${err.message}` : String(err);
     console.error("chat error:", message);
     send("error", { message });
   } finally {
