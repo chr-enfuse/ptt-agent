@@ -42,13 +42,21 @@ cd addin ; npm start
 
 1. Backend: `cd backend ; npm run typecheck`, then `curl http://localhost:3001/healthz`.
 2. Add-in: `cd addin ; npm run build:dev` must compile; then sideload and send a chat message
-   (streams from Opus 4.8). For Office.js write plumbing, `insertText` in
-   `addin/src/taskpane/taskpane.ts` is the building block (no UI button for it anymore).
+   (streams from Opus 4.8). The Office.js deck plumbing lives in `addin/src/taskpane/deck.ts`
+   (deck state, template-slide insertion, placeholder fills).
+3. Template fill end-to-end: upload a workbook in the pane, ask the agent to build a deck from
+   the quarterly-review template, and confirm placed values match their workbook cells.
 
 ## Conventions
 
 - `PLAN.md` is local-only planning notes — gitignored, never commit or reference it in
   committed files.
+- Branded `.pptx` templates in `backend/templates/` are **generated, committed artifacts**:
+  edit `backend/src/template-defs.ts` + `backend/scripts/build-templates.ts`, then regenerate
+  with `cd backend ; npm run build:templates` (placeholder shape names come from `objectName`).
+- PowerPoint tools (`get_deck_state`, `insert_template_slides`, `apply_slide_content`) execute
+  in the task pane: the backend loop emits a `client_tool` SSE event and waits for the pane to
+  POST the Office.js result back to `/api/chat/client-result` (see `addin/src/taskpane/deck.ts`).
 - No AI attribution trailers in commit messages.
 - Anthropic calls: `claude-opus-4-8`, adaptive thinking, system prompt kept byte-stable for
   prompt caching (see `backend/src/routes/chat.ts`).
