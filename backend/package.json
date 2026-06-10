@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
+    "build:templates": "tsx scripts/build-templates.ts",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit"
   },
@@ -25,6 +26,7 @@
     "@types/express": "^5.0.6",
     "@types/multer": "^2.1.0",
     "@types/node": "^25.9.2",
+    "pptxgenjs": "^4.0.1",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3"
   }

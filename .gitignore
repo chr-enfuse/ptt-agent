@@ -32,7 +32,7 @@ uploads/
 tmp/
 *.xlsx
 *.pptx
-!templates/**/*.pptx
+!backend/templates/*.pptx
 
 # Local planning notes
 PLAN.md
