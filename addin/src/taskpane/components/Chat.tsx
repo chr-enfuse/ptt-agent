@@ -2,6 +2,7 @@ import * as React from "react";
 import { useState, useRef, useEffect } from "react";
 import { makeStyles, tokens, Button, Textarea, Text, Spinner } from "@fluentui/react-components";
 import { Send24Regular, ArrowUpload24Regular } from "@fluentui/react-icons";
+import { executeDeckTool } from "../deck";
 
 /* global fetch, TextDecoder, FormData, File, HTMLDivElement, HTMLInputElement */
 
@@ -92,6 +93,29 @@ const useStyles = makeStyles({
   },
 });
 
+/**
+ * Execute a relayed client tool (PowerPoint tools run only in this Office.js
+ * runtime) and POST its outcome back so the backend loop can resume.
+ */
+async function runClientTool(call: { callId: string; name: string; payload: Record<string, unknown> }): Promise<void> {
+  let content: string;
+  let isError = false;
+  try {
+    content = JSON.stringify(await executeDeckTool(call.name, call.payload));
+  } catch (e) {
+    content = `Error: ${e instanceof Error ? e.message : String(e)}`;
+    isError = true;
+  }
+  const res = await fetch(`${BACKEND_URL}/api/chat/client-result`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callId: call.callId, content, isError }),
+  });
+  if (!res.ok) {
+    throw new Error(`failed to return ${call.name} result to the backend (${res.status})`);
+  }
+}
+
 /** POST the conversation to the backend and consume the SSE response. */
 async function streamChat(
   messages: { role: "user" | "assistant"; content: string }[],
@@ -132,6 +156,12 @@ async function streamChat(
       else if (event === "tool") {
         const tool = JSON.parse(data);
         onTool(tool.name, tool.input ?? {});
+      } else if (event === "client_tool") {
+        // The backend loop is blocked awaiting this call — no frames arrive
+        // until we post the result, so executing inline preserves ordering.
+        const call = JSON.parse(data);
+        onTool(call.name, call.payload ?? {});
+        await runClientTool(call);
       } else if (event === "error") throw new Error(JSON.parse(data).message);
       // "done" carries the stop reason; nothing to do for now.
     }
@@ -142,6 +172,14 @@ async function streamChat(
 function describeToolCall(name: string, input: Record<string, unknown>): string {
   if (name === "read_excel_range") return `Reading ${String(input.sheet)}!${String(input.range)}…`;
   if (name === "list_workbook_structure") return "Inspecting workbook structure…";
+  if (name === "list_templates") return "Browsing the template library…";
+  if (name === "load_template") return `Loading template "${String(input.template_id)}"…`;
+  if (name === "get_deck_state") return "Reading the open deck…";
+  if (name === "insert_template_slides") return `Inserting "${String(input.template_id)}" slides into the deck…`;
+  if (name === "apply_slide_content") {
+    const count = Array.isArray(input.fills) ? input.fills.length : 0;
+    return `Writing ${count} value${count === 1 ? "" : "s"} to the slide…`;
+  }
   return `Running ${name}…`;
 }
 
@@ -253,8 +291,9 @@ const Chat: React.FC = () => {
       <div className={styles.history} ref={historyRef}>
         {messages.length === 0 && (
           <Text size={200}>
-            Upload an Excel workbook and ask the agent about it — every figure it reports is read from the workbook by
-            deterministic tools. (Template fill and verified slide placement arrive in later milestones.)
+            Upload an Excel workbook and ask the agent to build slides from a branded template — every figure it
+            places is read from the workbook by deterministic tools. (Verified placement reports arrive in the next
+            milestone.)
           </Text>
         )}
         {messages.map((m, i) => {
