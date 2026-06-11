@@ -39,6 +39,10 @@ const MAX_LOOP_ITERATIONS = 16;
 // which the stock OpenAI types don't model.
 type ChatParams = OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming & {
   reasoning?: { effort: "low" | "medium" | "high" };
+  // OpenRouter routing: only use providers that actually support the params we send
+  // (notably `tools`), so gpt-oss isn't served by a backend that drops tool calling
+  // and narrates the call as text instead.
+  provider?: { require_parameters?: boolean };
 };
 
 const SYSTEM_PROMPT = `You are a financial-deck assistant embedded in a PowerPoint task pane.
@@ -60,6 +64,16 @@ the deck open in PowerPoint. To build slides:
 4. apply_slide_content per slide to write text into the named placeholder shapes.
 Use get_deck_state to inspect the open deck (slide ids, shape names, current text) whenever
 you are unsure of its contents.
+
+Using tools (read carefully):
+- Invoke tools ONLY through the function-calling interface. Never write a tool call as JSON,
+  a code block, or prose in your reply, and never show the user tool names, arguments, or
+  channel markers. The user sees a short activity chip for each real call — your visible text
+  is for explanations and results only.
+- When the request is clear, act immediately. Do not ask the user to confirm or to pick when
+  the choice is unambiguous — if only one template exists, or the user already named it, just
+  load and insert it. Chain the necessary tool calls yourself rather than narrating a plan and
+  stopping. Only ask a clarifying question when genuinely blocked (e.g. no workbook uploaded).
 
 Hard rules:
 - Financial figures must come from workbook cells, never from your own memory or arithmetic.
@@ -335,6 +349,20 @@ function parseToolArgs(raw: string): Record<string, unknown> {
   return JSON.parse(raw) as Record<string, unknown>;
 }
 
+/** Truncate a string for single-line log output. */
+function preview(s: string, max = 600): string {
+  const oneLine = s.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max)}…[+${oneLine.length - max}]` : oneLine;
+}
+
+/**
+ * Strip gpt-oss "harmony" artifacts that can leak into a streamed tool name,
+ * e.g. "insert_template_slides<|channel|>commentary" → "insert_template_slides".
+ */
+function sanitizeToolName(name: string): string {
+  return name.split("<|")[0]?.trim() ?? name.trim();
+}
+
 /**
  * POST /api/chat/client-result
  * Body: { callId: string, content: string, isError?: boolean }
@@ -398,9 +426,14 @@ chatRouter.post("/", async (req, res) => {
       ...incoming.map((m) => ({ role: m.role, content: m.content })),
     ];
 
+    const reqId = randomUUID().slice(0, 8);
+    const reqStart = Date.now();
+    console.log(`[chat ${reqId}] start: model=${MODEL}, effort=${REASONING_EFFORT}, ${incoming.length} message(s)`);
+
     for (let iteration = 0; ; iteration++) {
       if (clientGone) return;
       if (iteration >= MAX_LOOP_ITERATIONS) {
+        console.error(`[chat ${reqId}] aborted: exceeded ${MAX_LOOP_ITERATIONS} tool-use rounds`);
         send("error", { message: `tool-use loop exceeded ${MAX_LOOP_ITERATIONS} iterations` });
         return;
       }
@@ -413,7 +446,9 @@ chatRouter.post("/", async (req, res) => {
         tool_choice: "auto",
         stream: true,
         reasoning: { effort: REASONING_EFFORT },
+        provider: { require_parameters: true },
       };
+      const roundStart = Date.now();
       const stream = await getClient().chat.completions.create(params);
 
       // Reassemble the assistant turn from streamed deltas: visible text plus any
@@ -439,7 +474,13 @@ chatRouter.post("/", async (req, res) => {
         if (choice.finish_reason) finishReason = choice.finish_reason;
       }
 
+      const llmMs = Date.now() - roundStart;
       const toolCalls = toolCallsByIndex.filter(Boolean);
+      for (const t of toolCalls) t.name = sanitizeToolName(t.name);
+      console.log(
+        `[chat ${reqId}] round ${iteration}: finish=${finishReason}, ` +
+          `${toolCalls.length} tool call(s)${text ? `, ${text.length} chars text` : ""} (llm ${llmMs}ms)`,
+      );
 
       if (toolCalls.length > 0) {
         loopMessages.push({
@@ -459,6 +500,7 @@ chatRouter.post("/", async (req, res) => {
             input = parseToolArgs(t.args);
           } catch {
             // Model emitted malformed JSON arguments — report back so it can retry.
+            console.warn(`[chat ${reqId}]   ✗ ${t.name} unparseable args: ${preview(t.args)}`);
             loopMessages.push({
               role: "tool",
               tool_call_id: t.id,
@@ -466,6 +508,8 @@ chatRouter.post("/", async (req, res) => {
             });
             continue;
           }
+          console.log(`[chat ${reqId}]   → ${t.name} ${preview(JSON.stringify(input))}`);
+          const toolStart = Date.now();
           if (CLIENT_TOOLS.has(t.name)) {
             // The client_tool event both renders the activity chip and carries the call.
             outcome = await executeClientTool(t.name, input, send, requestCallIds);
@@ -473,6 +517,9 @@ chatRouter.post("/", async (req, res) => {
             send("tool", { name: t.name, input });
             outcome = executeBackendTool(t.name, input);
           }
+          console.log(
+            `[chat ${reqId}]   ← ${t.name} ${outcome.isError ? "ERROR " : ""}(${Date.now() - toolStart}ms) ${preview(outcome.content, 300)}`,
+          );
           loopMessages.push({
             role: "tool",
             tool_call_id: t.id,
@@ -482,6 +529,9 @@ chatRouter.post("/", async (req, res) => {
         continue;
       }
 
+      console.log(
+        `[chat ${reqId}] done after ${iteration + 1} round(s) in ${Date.now() - reqStart}ms: finish=${finishReason}`,
+      );
       send("done", { stopReason: finishReason });
       return;
     }
