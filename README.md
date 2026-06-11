@@ -189,6 +189,7 @@ npm run stop
 | Backend dev server | `backend/` | `.\.venv\Scripts\python -m uvicorn app.main:app --port 3001` |
 | Backend dev server (auto-reload) | `backend/` | `.\.venv\Scripts\python -m uvicorn app.main:app --port 3001 --reload` |
 | Install / update backend deps | `backend/` | `.\.venv\Scripts\python -m pip install -e .` |
+| Regenerate branded `.pptx` templates | `backend/` | `.\.venv\Scripts\python scripts\build_templates.py` |
 | Dev server + sideload PowerPoint | `addin/` | `npm start` |
 | Dev server only (no sideload) | `addin/` | `npm run dev-server` |
 | Build add-in bundle | `addin/` | `npm run build` (prod) / `npm run build:dev` |

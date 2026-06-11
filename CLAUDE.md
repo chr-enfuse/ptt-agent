@@ -52,11 +52,13 @@ cd addin ; npm start
 
 - `PLAN.md` is local-only planning notes — gitignored, never commit or reference it in
   committed files.
-- Branded `.pptx` templates in `backend/templates/` are **committed artifacts**; their
-  placeholder definitions live in the repo-root `templates.json` (read at runtime by
-  `backend/app/templates.py`). The original Node generator (`build-templates.ts`) was retired
-  with the Node backend — regenerating a template now means editing the `.pptx` directly or
-  porting the generator to `python-pptx` (the old script is recoverable from git history).
+- Branded `.pptx` templates in `backend/templates/` are **generated, committed artifacts**:
+  edit the defs in the repo-root `templates.json` (and, for layout changes, the builder in
+  `backend/scripts/build_templates.py`), then regenerate with
+  `cd backend ; .\.venv\Scripts\python scripts\build_templates.py`. Each placeholder is rendered
+  as a rectangle whose OOXML shape name is its `shape` field — that's what Office.js reads back
+  as `shape.name` and what `apply_slide_content` fills against, so the names must stay in sync
+  with `templates.json`. (Ported from the retired Node `build-templates.ts`/pptxgenjs to `python-pptx`.)
 - PowerPoint tools (`get_deck_state`, `insert_template_slides`, `apply_slide_content`) execute
   in the task pane: the backend loop emits a `client_tool` SSE event and waits for the pane to
   POST the Office.js result back to `/api/chat/client-result` (see `addin/src/taskpane/deck.ts`).

@@ -68,5 +68,6 @@ def get_template_base64(template_id: str) -> str:
         return base64.b64encode(path.read_bytes()).decode("ascii")
     except OSError as err:
         raise TemplateToolError(
-            f'template file "{t["file"]}" is missing — run `npm run build:templates` in backend/'
+            f'template file "{t["file"]}" is missing — run '
+            "`python scripts/build_templates.py` in backend/"
         ) from err
