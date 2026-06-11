@@ -26,7 +26,9 @@ const FONT = "Segoe UI";
 
 async function buildQuarterlyReview(file: string) {
   const pptx = new PptxGenJS();
-  pptx.layout = "LAYOUT_16x9"; // 13.33in × 7.5in
+  // 13.33in × 7.5in widescreen. NB: in pptxgenjs "LAYOUT_16x9" is 10×5.625 —
+  // the 13.33-wide canvas these coordinates assume is "LAYOUT_WIDE".
+  pptx.layout = "LAYOUT_WIDE";
 
   // ---- Slide 1: Title ----------------------------------------------------
   const title = pptx.addSlide();
@@ -57,8 +59,11 @@ async function buildQuarterlyReview(file: string) {
   kpi.addShape("rect", { x: 0, y: 1.1, w: 13.33, h: 0.06, fill: { color: GOLD } });
   kpi.addText("Financial Highlights", {
     objectName: "heading_text",
-    x: 0.6, y: 0.2, w: 12, h: 0.7,
+    // Box spans the full banner height so the heading is vertically centred in it
+    // and shrinks to fit rather than spilling past the navy bar.
+    x: 0.6, y: 0, w: 12.1, h: 1.1,
     fontFace: FONT, fontSize: 26, bold: true, color: "FFFFFF", align: "left",
+    valign: "middle", fit: "shrink",
   });
 
   // Four KPI cards in a row.
@@ -75,11 +80,15 @@ async function buildQuarterlyReview(file: string) {
       objectName: `kpi${i}_label`,
       x: x + 0.15, y: 2.5, w: cardW - 0.3, h: 0.5,
       fontFace: FONT, fontSize: 14, bold: true, color: GRAY_TEXT, align: "center",
+      valign: "middle", fit: "shrink",
     });
     kpi.addText("—", {
       objectName: `kpi${i}_value`,
       x: x + 0.15, y: 3.2, w: cardW - 0.3, h: 1.1,
-      fontFace: FONT, fontSize: 30, bold: true, color: NAVY, align: "center",
+      fontFace: FONT, fontSize: 28, bold: true, color: NAVY, align: "center",
+      // Long figures (e.g. "$13,456,250") shrink to fit instead of spilling out of
+      // the card — most visible on the rightmost card, which spills off-slide.
+      valign: "middle", fit: "shrink",
     });
   }
 
