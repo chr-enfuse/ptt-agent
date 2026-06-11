@@ -8,7 +8,7 @@ model** — they're extracted from workbook cells by deterministic tools and ver
 ## Layout
 
 - `addin/` — Office Add-in task pane (React + TS + Office.js + Fluent UI, webpack, XML manifest)
-- `backend/` — Express + TS API (OpenRouter streaming chat via the OpenAI SDK, exceljs workbook parsing)
+- `backend/` — Python/FastAPI API driven by **PydanticAI** (OpenRouter streaming chat + tool-use loop, openpyxl workbook parsing). Listens on :3001. See `backend/README.md`. Template defs live in the repo-root `templates.json`.
 
 ## Running the app
 
@@ -16,7 +16,8 @@ Two independent servers; both must run for the full experience:
 
 ```powershell
 # Backend — http://localhost:3001 (needs OPENROUTER_API_KEY in backend/.env; copy .env.example)
-cd backend ; npm run dev
+# one-time setup: cd backend ; py -m venv .venv ; .\.venv\Scripts\python -m pip install -e .
+cd backend ; .\.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 3001
 
 # Add-in — compiles + serves task pane at https://localhost:3000, sideloads into desktop
 # PowerPoint (registers manifest.xml in HKCU registry), and launches PowerPoint
@@ -40,7 +41,7 @@ cd addin ; npm start
 
 ## Verify a change works
 
-1. Backend: `cd backend ; npm run typecheck`, then `curl http://localhost:3001/healthz`.
+1. Backend: `cd backend ; .\.venv\Scripts\python -m uvicorn app.main:app --port 3001`, then `curl http://localhost:3001/healthz`.
 2. Add-in: `cd addin ; npm run build:dev` must compile; then sideload and send a chat message
    (streams from the configured OpenRouter model). The Office.js deck plumbing lives in `addin/src/taskpane/deck.ts`
    (deck state, template-slide insertion, placeholder fills).
@@ -51,13 +52,15 @@ cd addin ; npm start
 
 - `PLAN.md` is local-only planning notes — gitignored, never commit or reference it in
   committed files.
-- Branded `.pptx` templates in `backend/templates/` are **generated, committed artifacts**:
-  edit `backend/src/template-defs.ts` + `backend/scripts/build-templates.ts`, then regenerate
-  with `cd backend ; npm run build:templates` (placeholder shape names come from `objectName`).
+- Branded `.pptx` templates in `backend/templates/` are **committed artifacts**; their
+  placeholder definitions live in the repo-root `templates.json` (read at runtime by
+  `backend/app/templates.py`). The original Node generator (`build-templates.ts`) was retired
+  with the Node backend — regenerating a template now means editing the `.pptx` directly or
+  porting the generator to `python-pptx` (the old script is recoverable from git history).
 - PowerPoint tools (`get_deck_state`, `insert_template_slides`, `apply_slide_content`) execute
   in the task pane: the backend loop emits a `client_tool` SSE event and waits for the pane to
   POST the Office.js result back to `/api/chat/client-result` (see `addin/src/taskpane/deck.ts`).
 - No AI attribution trailers in commit messages.
-- LLM calls go through OpenRouter's OpenAI-compatible API (OpenAI SDK pointed at
-  `https://openrouter.ai/api/v1`). Model and reasoning effort are env-configurable (`MODEL`,
-  `REASONING_EFFORT`); default model is `openai/gpt-oss-20b` (see `backend/src/routes/chat.ts`).
+- LLM calls go through **PydanticAI** against OpenRouter's OpenAI-compatible API
+  (`https://openrouter.ai/api/v1`). Model and reasoning effort are env-configurable (`MODEL`,
+  `REASONING_EFFORT`); default model is `openai/gpt-oss-20b` (see `backend/app/agent.py`).
